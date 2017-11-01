@@ -13,8 +13,8 @@ use std::thread;
 use std::time::Duration;
 
 use bytes::BytesMut;
-use futures::Future;
-use tokio_core::reactor::Core;
+use futures::{Future, IntoFuture};
+use tokio_core::reactor::{Core, Timeout};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::{Decoder, Encoder, Framed};
 use tokio_proto::TcpClient;
@@ -142,6 +142,74 @@ fn reactor_is_not_dropped() {
     let mut reactor = Core::new().unwrap();
 
     send_message(&mut reactor, &address);
+
+    thread::sleep(Duration::from_millis(2000));
+
+    check_server_has_finished(finished);
+}
+
+fn send_message_and_preserve_connection(
+    reactor: &mut Core,
+    address: &SocketAddr,
+) {
+    // Give some time for server to start
+    thread::sleep(Duration::from_millis(1000));
+
+    let handle = reactor.handle();
+    let client = TcpClient::new(DummyProtocol);
+    let connect = client.connect(address, &handle);
+
+    let send = connect.and_then(|connection| {
+        connection.call("hello".as_bytes().iter().cloned().collect())
+            .join(Ok(connection).into_future())
+    });
+
+    reactor.run(send).unwrap();
+}
+
+#[test]
+fn connection_is_preserved_and_reactor_is_dropped() {
+    let address: SocketAddr = "127.0.0.1:55138".parse().unwrap();
+    let finished = start_server(address.clone());
+
+    {
+        let mut reactor = Core::new().unwrap();
+
+        send_message_and_preserve_connection(&mut reactor, &address);
+    }
+
+    thread::sleep(Duration::from_millis(2000));
+
+    check_server_has_finished(finished);
+}
+
+#[test]
+fn connection_is_preserved_and_reactor_is_not_dropped() {
+    let address: SocketAddr = "127.0.0.1:55139".parse().unwrap();
+    let finished = start_server(address.clone());
+
+    let mut reactor = Core::new().unwrap();
+
+    send_message_and_preserve_connection(&mut reactor, &address);
+
+    thread::sleep(Duration::from_millis(2000));
+
+    check_server_has_finished(finished);
+}
+
+#[test]
+fn connection_is_preserved_and_reactor_is_not_dropped_but_runs_timeout() {
+    let address: SocketAddr = "127.0.0.1:55140".parse().unwrap();
+    let finished = start_server(address.clone());
+
+    let mut reactor = Core::new().unwrap();
+    let handle = reactor.handle();
+
+    send_message_and_preserve_connection(&mut reactor, &address);
+
+    let timeout = Timeout::new(Duration::from_millis(1), &handle).unwrap();
+
+    reactor.run(timeout).unwrap();
 
     thread::sleep(Duration::from_millis(2000));
 
